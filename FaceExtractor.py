@@ -202,50 +202,59 @@ class FaceDetectorCropper:
                 center_y - h * y_offset_factor
             )  # Ajuste vertical
 
-            # 7. Define o tamanho do recorte (quadrado)
-            base_dim = max(w, h)
-            final_dim = int(base_dim * expansion_factor)
+            # 7. Calcula as proporções do recorte baseadas no crop_size alvo
+            target_w, target_h = crop_size
+            aspect_ratio = target_w / target_h
+            
+            base_dim = max(w, h) * expansion_factor
+            
+            # Ajusta a largura e altura do recorte para bater com a proporção final
+            if aspect_ratio > 1.0: # Paisagem (ex: 3:2)
+                final_h = int(base_dim)
+                final_w = int(base_dim * aspect_ratio)
+            else: # Retrato ou quadrado (ex: 2:3 ou 1:1)
+                final_w = int(base_dim)
+                final_h = int(base_dim / aspect_ratio)
 
-            # 8. Calcula coordenadas ideais do recorte
-            ideal_x1 = center_x - final_dim // 2
-            ideal_y1 = center_y - final_dim // 2
-            ideal_x2 = ideal_x1 + final_dim
-            ideal_y2 = ideal_y1 + final_dim
+            # 8. PREVENÇÃO 1: Garante que a caixa não seja maior que a própria foto original
+            # Se for, reduzimos a caixa mantendo a proporção exata
+            if final_w > orig_width:
+                final_w = orig_width
+                final_h = int(final_w / aspect_ratio)
+            if final_h > orig_height:
+                final_h = orig_height
+                final_w = int(final_h * aspect_ratio)
 
-            # 9. Ajusta coordenadas para os limites da imagem
-            crop_x1 = max(0, ideal_x1)
-            crop_y1 = max(0, ideal_y1)
-            crop_x2 = min(orig_width, ideal_x2)
-            crop_y2 = min(orig_height, ideal_y2)
+            # 9. Calcula coordenadas ideais (tentando centralizar)
+            ideal_x1 = int(center_x - final_w / 2)
+            ideal_y1 = int(center_y - final_h / 2)
 
-            # 10. Recorta da imagem ORIGINAL
-            cropped_region = original_image[crop_y1:crop_y2, crop_x1:crop_x2]
+            # 10. PREVENÇÃO 2: Desloca a caixa caso ela vaze pelos lados (Elimina as faixas)
+            if ideal_x1 < 0:
+                ideal_x1 = 0  # Empurra para a direita
+            elif ideal_x1 + final_w > orig_width:
+                ideal_x1 = orig_width - final_w  # Empurra para a esquerda
 
-            if cropped_region.size == 0:
+            if ideal_y1 < 0:
+                ideal_y1 = 0  # Empurra para baixo
+            elif ideal_y1 + final_h > orig_height:
+                ideal_y1 = orig_height - final_h  # Empurra para cima
+
+            # 11. Aplica o recorte final (seguro, sem barras e sem distorção)
+            ideal_x2 = ideal_x1 + final_w
+            ideal_y2 = ideal_y1 + final_h
+            
+            cropped_face = original_image[ideal_y1:ideal_y2, ideal_x1:ideal_x2]
+
+            if cropped_face.size == 0:
                 print(
                     f"   - Erro: Recorte inválido (tamanho zero) para rosto {i+1}",
                     file=sys.stderr,
                 )
                 continue
-
-            # 11. Adiciona padding (barras pretas) se o recorte saiu dos limites
-            pad_left = max(0, -ideal_x1)
-            pad_top = max(0, -ideal_y1)
-            pad_right = max(0, ideal_x2 - orig_width)
-            pad_bottom = max(0, ideal_y2 - orig_height)
-
-            if any([pad_left, pad_top, pad_right, pad_bottom]):
-                cropped_face = cv2.copyMakeBorder(
-                    cropped_region,
-                    pad_top,
-                    pad_bottom,
-                    pad_left,
-                    pad_right,
-                    cv2.BORDER_CONSTANT,
-                    value=[0, 0, 0],
-                )
-            else:
-                cropped_face = cropped_region
+            
+            # NOTA: O bloco antigo do cv2.copyMakeBorder (padding) foi totalmente removido
+            # pois garantimos que o recorte sempre existe dentro da imagem.
 
             # 12. Redimensionamento inteligente para o tamanho final
             interpolation = self._get_interpolation_method(
@@ -345,6 +354,9 @@ class FaceDetectorCropper:
         cv2.imshow(f"Detecção em {img_path.name} (Reduzida)", display_image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+        
+    def close(self):
+        self.face_detection.close()
 
 
 def main():
@@ -366,10 +378,10 @@ def main():
     INPUT_DIR = Path("FacesToExtract")
 
     # Onde salvar as imagens recortadas
-    OUTPUT_DIR = INPUT_DIR / "..\\FacesExtracted"
+    OUTPUT_DIR = INPUT_DIR.parent / "FacesExtracted"
 
     # Tamanho final do recorte (largura, altura)
-    CROP_SIZE = (400, 400)
+    CROP_SIZE = (350, 400)
 
     # Fator de expansão (zoom).
     # Menor = mais zoom no rosto (ex: 1.8)
